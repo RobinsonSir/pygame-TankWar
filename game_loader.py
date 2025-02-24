@@ -7,6 +7,10 @@ import food
 import maps
 import map_loader
 import special_effects
+import logging
+# 配置日志格式和级别
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
 """
 修改时间：2021.12.15
 修改人：2019051604048 詹孝东
@@ -264,10 +268,10 @@ class Game:
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_F3:
                     self.isSoundEffect = not self.isSoundEffect
-                    self.start_sound.stop()
+                    self.start_sound.stop() 
     # 玩家操作检测函数--------------------------------------------------------
     # 功能：对键盘进行检测 并对玩家一和玩家二的操作进行移动
-    def operation_detection_section(self):
+    def operation_detection_section(self):     
         key_pressed = pygame.key.get_pressed()
         # 玩家一的移动、射击操作
         # 参数 moving movdir alltankGroup self.bgMap.brickGroup, self.bgMap.ironGroup,self.bgMap.riverGroup
@@ -411,7 +415,8 @@ class Game:
                     self.movdir2 = 3
                     self.running_T2 = True
             # 如果点击0 则是发射子弹
-            if key_pressed[pygame.K_KP0]:
+            #if key_pressed[pygame.K_KP0]:
+            if key_pressed[pygame.K_SPACE]:
                 if not self.myTank_T2.bullet.life:
                     if self.isSoundEffect:
                         self.attack_sound.play()
@@ -936,7 +941,8 @@ class Game:
             self.otherEnemyGroup.add(enemy)
 
         # 默认是单人
-        self.myTank_T2.life = 0
+        #self.myTank_T2.life = 0
+        self.myTank_T2.life = 3
         self.start_sound.play()
         while True:
             #游戏结束

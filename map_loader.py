@@ -2,6 +2,10 @@
 import pygame
 import sys
 import maps
+import logging
+# 配置日志格式和级别
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
 """
 修改时间：2021.12.15
 修改人：2019051604048 詹孝东
