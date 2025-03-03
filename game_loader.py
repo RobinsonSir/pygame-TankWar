@@ -941,8 +941,8 @@ class Game:
             self.otherEnemyGroup.add(enemy)
 
         # 默认是单人
-        #self.myTank_T2.life = 0
-        self.myTank_T2.life = 3
+        self.myTank_T2.life = 0
+        #self.myTank_T2.life = 3
         self.start_sound.play()
         while True:
             #游戏结束
