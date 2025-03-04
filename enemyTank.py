@@ -86,25 +86,44 @@ class EnemyTank(pygame.sprite.Sprite):
         self.chase_delay = 0
         # 不同类型坦克有不同的追踪参数
         if self.kind == 2:  # 速度快的坦克更频繁更新方向
-            self.chase_interval = 3  # 更快的更新频率
-            self.chase_probability = 1.0  # 100%追踪
-            self.chase_range = 200  # 更大的追踪范围
-            self.shoot_range = 150  # 射击范围
+            self.chase_interval = 2
+            self.chase_probability = 1.0
+            self.chase_range = 300
+            self.shoot_range = 200
+            self.path_update_interval = 5
+            self.random_move_chance = 0.15  # 更高的随机性
         elif self.kind == 3:  # 生命值高的坦克稳定追踪
-            self.chase_interval = 4
+            self.chase_interval = 3
             self.chase_probability = 0.98
-            self.chase_range = 180
-            self.shoot_range = 130
+            self.chase_range = 250
+            self.shoot_range = 180
+            self.path_update_interval = 8
+            self.random_move_chance = 0.1
         else:  # 普通坦克
-            self.chase_interval = 5
+            self.chase_interval = 4
             self.chase_probability = 0.95
-            self.chase_range = 150
-            self.shoot_range = 100
+            self.chase_range = 200
+            self.shoot_range = 150
+            self.path_update_interval = 10
+            self.random_move_chance = 0.08
 
         # 射击相关参数
         self.shoot_delay = 0
         self.shoot_interval = 60  # 射击冷却时间
         self.last_target_pos = None  # 记录上一次目标位置
+
+        # 路径规划相关参数
+        self.path_update_delay = 0
+        self.current_path = []  # 当前规划的路径
+        self.path_index = 0  # 当前路径点索引
+        self.obstacle_avoidance_range = 50  # 障碍物避让范围
+
+        # 增加新的移动相关参数
+        self.stuck_time = 0  # 记录卡住的时间
+        self.last_position = None  # 记录上一次位置
+        self.stuck_threshold = 30  # 卡住判定阈值
+        self.escape_direction = None  # 逃离方向
+        self.escape_time = 0  # 逃离时间
 
     # 射击子弹方法
     def shoot(self):
@@ -254,17 +273,217 @@ class EnemyTank(pygame.sprite.Sprite):
                     self.dir_x = 0
                     self.dir_y = 1 if dy > 0 else -1
 
-    # 移动方法
+    def find_path_to_target(self, target_tank, brickGroup, ironGroup, riverGroup):
+        """使用改进的A*算法寻找路径"""
+        if not target_tank:
+            return []
+
+        # 获取起点和终点
+        start = (self.rect.centerx, self.rect.centery)
+        end = (target_tank.rect.centerx, target_tank.rect.centery)
+
+        # 创建网格
+        grid_size = 24  # 一个格子的大小
+        start_grid = (start[0] // grid_size, start[1] // grid_size)
+        end_grid = (end[0] // grid_size, end[1] // grid_size)
+
+        # 使用A*算法
+        open_set = {start_grid}
+        closed_set = set()
+        came_from = {}
+        g_score = {start_grid: 0}
+        f_score = {start_grid: abs(start_grid[0] - end_grid[0]) + abs(start_grid[1] - end_grid[1])}
+
+        while open_set:
+            current = min(open_set, key=lambda x: f_score.get(x, float('inf')))
+            
+            if current == end_grid:
+                # 重建路径
+                path = []
+                while current in came_from:
+                    path.append(current)
+                    current = came_from[current]
+                path.append(start_grid)
+                path.reverse()
+                return path
+
+            open_set.remove(current)
+            closed_set.add(current)
+
+            # 获取相邻节点
+            for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                neighbor = (current[0] + dx, current[1] + dy)
+                
+                # 检查边界
+                if not (0 <= neighbor[0] < 26 and 0 <= neighbor[1] < 26):
+                    continue
+                    
+                if neighbor in closed_set:
+                    continue
+
+                # 检查碰撞
+                test_rect = pygame.Rect(neighbor[0] * grid_size, neighbor[1] * grid_size, grid_size, grid_size)
+                collision = False
+                for brick in brickGroup:
+                    if test_rect.colliderect(brick.rect):
+                        collision = True
+                        break
+                for iron in ironGroup:
+                    if test_rect.colliderect(iron.rect):
+                        collision = True
+                        break
+                for river in riverGroup:
+                    if test_rect.colliderect(river.rect):
+                        collision = True
+                        break
+                
+                if collision:
+                    continue
+
+                tentative_g_score = g_score[current] + 1
+
+                if neighbor not in open_set:
+                    open_set.add(neighbor)
+                elif tentative_g_score >= g_score.get(neighbor, float('inf')):
+                    continue
+
+                came_from[neighbor] = current
+                g_score[neighbor] = tentative_g_score
+                f_score[neighbor] = g_score[neighbor] + abs(neighbor[0] - end_grid[0]) + abs(neighbor[1] - end_grid[1])
+
+        # 如果找不到路径，返回直接路径
+        return [(start_grid[0], start_grid[1]), (end_grid[0], end_grid[1])]
+
+    def update_path(self, target_tank, brickGroup, ironGroup, riverGroup):
+        """更新路径规划"""
+        self.path_update_delay += 1
+        if self.path_update_delay >= self.path_update_interval:
+            self.path_update_delay = 0
+            # 重新规划路径
+            self.current_path = self.find_path_to_target(target_tank, brickGroup, ironGroup, riverGroup)
+            self.path_index = 0
+
+    def follow_path(self):
+        """沿着规划的路径移动"""
+        if not self.current_path or self.path_index >= len(self.current_path):
+            return False
+
+        # 获取下一个路径点
+        next_point = self.current_path[self.path_index]
+        current_pos = (self.rect.centerx, self.rect.centery)
+        target_pos = (next_point[0] * 24 + 12, next_point[1] * 24 + 12)
+
+        # 计算移动方向
+        dx = target_pos[0] - current_pos[0]
+        dy = target_pos[1] - current_pos[1]
+
+        # 如果足够接近当前路径点，移动到下一个点
+        if abs(dx) < 5 and abs(dy) < 5:
+            self.path_index += 1
+            return True
+
+        # 设置移动方向
+        if abs(dx) > abs(dy):
+            self.dir_x = 1 if dx > 0 else -1
+            self.dir_y = 0
+        else:
+            self.dir_x = 0
+            self.dir_y = 1 if dy > 0 else -1
+
+        return True
+
+    def is_stuck(self):
+        """检查坦克是否卡住"""
+        if self.last_position is None:
+            self.last_position = (self.rect.centerx, self.rect.centery)
+            return False
+            
+        current_pos = (self.rect.centerx, self.rect.centery)
+        distance = math.sqrt((current_pos[0] - self.last_position[0])**2 + 
+                           (current_pos[1] - self.last_position[1])**2)
+        
+        if distance < 2:  # 如果移动距离很小
+            self.stuck_time += 1
+        else:
+            self.stuck_time = 0
+            self.last_position = current_pos
+            
+        return self.stuck_time > self.stuck_threshold
+
+    def find_escape_direction(self, tankGroup, brickGroup, ironGroup, riverGroup):
+        """寻找逃离方向"""
+        best_direction = None
+        max_distance = 0
+        
+        for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            test_rect = self.rect.copy()
+            test_rect.move_ip(dx * self.speed * 3, dy * self.speed * 3)  # 测试更远的距离
+            
+            # 检查是否与障碍物碰撞
+            collision = False
+            for iron in ironGroup:
+                if test_rect.colliderect(iron.rect):
+                    collision = True
+                    break
+            for tank in tankGroup:
+                if test_rect.colliderect(tank.rect):
+                    collision = True
+                    break
+            for river in riverGroup:
+                if test_rect.colliderect(river.rect):
+                    collision = True
+                    break
+            
+            if not collision:
+                # 计算这个方向能移动的距离
+                distance = math.sqrt((test_rect.centerx - self.rect.centerx)**2 + 
+                                  (test_rect.centery - self.rect.centery)**2)
+                if distance > max_distance:
+                    max_distance = distance
+                    best_direction = (dx, dy)
+        
+        return best_direction
+
     def move(self, tankGroup, brickGroup, ironGroup, riverGroup):
         # 获取最近的玩家坦克
         target_tank = self.get_nearest_player_tank(tankGroup)
 
-        # 实时更新追踪
-        self.chase_delay += 1
-        if self.chase_delay >= self.chase_interval:
-            self.chase_delay = 0
-            if random.random() < self.chase_probability:
-                self.chase_player(target_tank)
+        # 检查是否卡住
+        if self.is_stuck():
+            # 如果卡住，尝试逃离
+            if self.escape_direction is None:
+                self.escape_direction = self.find_escape_direction(tankGroup, brickGroup, ironGroup, riverGroup)
+                self.escape_time = 0
+            
+            if self.escape_direction:
+                self.escape_time += 1
+                if self.escape_time < 20:  # 逃离一段时间
+                    self.dir_x, self.dir_y = self.escape_direction
+                else:
+                    self.escape_direction = None
+                    self.escape_time = 0
+                    self.stuck_time = 0
+            else:
+                # 如果找不到逃离方向，随机移动
+                self.dir_x, self.dir_y = random.choice(([0, 1], [0, -1], [1, 0], [-1, 0]))
+                self.stuck_time = 0
+        else:
+            # 正常追踪逻辑
+            self.update_path(target_tank, brickGroup, ironGroup, riverGroup)
+            
+            # 实时更新追踪
+            self.chase_delay += 1
+            if self.chase_delay >= self.chase_interval:
+                self.chase_delay = 0
+                if random.random() < self.chase_probability:
+                    # 随机移动检查
+                    if random.random() < self.random_move_chance:
+                        self.dir_x, self.dir_y = random.choice(([0, 1], [0, -1], [1, 0], [-1, 0]))
+                    else:
+                        # 尝试沿着规划的路径移动
+                        if not self.follow_path():
+                            # 如果无法沿着路径移动，使用直接追踪
+                            self.chase_player(target_tank)
 
         # 智能射击判断
         self.shoot_delay += 1
@@ -272,6 +491,9 @@ class EnemyTank(pygame.sprite.Sprite):
             if self.should_shoot(target_tank):
                 self.shoot()
                 self.shoot_delay = 0
+
+        # 保存当前位置
+        old_rect = self.rect.copy()
 
         # 进行移动
         self.rect = self.rect.move(self.speed * self.dir_x, self.speed * self.dir_y)
@@ -290,23 +512,84 @@ class EnemyTank(pygame.sprite.Sprite):
             self.tank_R0 = self.tank.subsurface((0, 144), (48, 48))
             self.tank_R1 = self.tank.subsurface((48, 144), (48, 48))
 
-        # 碰撞检测
+        # 边界检查
         if self.rect.top < 3:
-            self.rect = self.rect.move(self.speed * 0, self.speed * 1)
-            self.dir_x, self.dir_y = random.choice(([0, 1], [0, -1], [1, 0], [-1, 0]))
+            self.rect = old_rect
+            # 在边缘处优先选择水平移动
+            if target_tank:
+                if target_tank.rect.centerx > self.rect.centerx:
+                    self.dir_x, self.dir_y = 1, 0
+                else:
+                    self.dir_x, self.dir_y = -1, 0
+            else:
+                self.dir_x, self.dir_y = random.choice(([1, 0], [-1, 0]))
         elif self.rect.bottom > 630 - 3:
-            self.rect = self.rect.move(self.speed * 0, self.speed * -1)
-            self.dir_x, self.dir_y = random.choice(([0, 1], [0, -1], [1, 0], [-1, 0]))
+            self.rect = old_rect
+            if target_tank:
+                if target_tank.rect.centerx > self.rect.centerx:
+                    self.dir_x, self.dir_y = 1, 0
+                else:
+                    self.dir_x, self.dir_y = -1, 0
+            else:
+                self.dir_x, self.dir_y = random.choice(([1, 0], [-1, 0]))
         elif self.rect.left < 3:
-            self.rect = self.rect.move(self.speed * 1, self.speed * 0)
-            self.dir_x, self.dir_y = random.choice(([0, 1], [0, -1], [1, 0], [-1, 0]))
+            self.rect = old_rect
+            # 在边缘处优先选择垂直移动
+            if target_tank:
+                if target_tank.rect.centery > self.rect.centery:
+                    self.dir_x, self.dir_y = 0, 1
+                else:
+                    self.dir_x, self.dir_y = 0, -1
+            else:
+                self.dir_x, self.dir_y = random.choice(([0, 1], [0, -1]))
         elif self.rect.right > 630 - 3:
-            self.rect = self.rect.move(self.speed * -1, self.speed * 0)
-            self.dir_x, self.dir_y = random.choice(([0, 1], [0, -1], [1, 0], [-1, 0]))
+            self.rect = old_rect
+            if target_tank:
+                if target_tank.rect.centery > self.rect.centery:
+                    self.dir_x, self.dir_y = 0, 1
+                else:
+                    self.dir_x, self.dir_y = 0, -1
+            else:
+                self.dir_x, self.dir_y = random.choice(([0, 1], [0, -1]))
 
-        # 碰撞墙体和其他坦克
+        # 碰撞检测
         if pygame.sprite.spritecollide(self, ironGroup, False, None) \
                 or pygame.sprite.spritecollide(self, tankGroup, False, None) \
                 or pygame.sprite.spritecollide(self, riverGroup, False, None):
-            self.rect = self.rect.move(self.speed * -self.dir_x, self.speed * -self.dir_y)
-            self.dir_x, self.dir_y = random.choice(([0, 1], [0, -1], [1, 0], [-1, 0]))
+            self.rect = old_rect
+            # 碰撞时重新规划路径
+            self.current_path = []
+            self.path_index = 0
+            
+            # 智能选择新方向
+            possible_directions = []
+            for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                test_rect = self.rect.copy()
+                test_rect.move_ip(dx * self.speed, dy * self.speed)
+                # 检查是否与任何障碍物碰撞
+                collision = False
+                for iron in ironGroup:
+                    if test_rect.colliderect(iron.rect):
+                        collision = True
+                        break
+                for tank in tankGroup:
+                    if test_rect.colliderect(tank.rect):
+                        collision = True
+                        break
+                for river in riverGroup:
+                    if test_rect.colliderect(river.rect):
+                        collision = True
+                        break
+                
+                if not collision:
+                    possible_directions.append((dx, dy))
+            
+            if possible_directions:
+                # 选择最接近目标的方向
+                best_direction = min(possible_directions, 
+                    key=lambda d: abs(d[0] * (target_tank.rect.centerx - self.rect.centerx) + 
+                                    d[1] * (target_tank.rect.centery - self.rect.centery)))
+                self.dir_x, self.dir_y = best_direction
+            else:
+                # 如果没有可行方向，随机选择一个方向
+                self.dir_x, self.dir_y = random.choice(([0, 1], [0, -1], [1, 0], [-1, 0]))
